@@ -1,0 +1,27 @@
+{
+    "name": "wood/redis-queue",
+    "type": "library",
+    "require": {
+        "php": ">=8.3",
+        "ext-swoole": "*",
+        "predis/predis": "^3.4"
+    },
+    "require-dev": {
+        "symfony/var-dumper": "^7.4"
+    },
+    "autoload": {
+        "psr-4": {
+            "Wood\\RedisQueue\\": "src/",
+            "Wood\\RedisQueue\\Test\\": "test/"
+        },
+        "files": [
+            "src/helpers.php"
+        ]
+    },
+    "authors": [
+        {
+            "name": "WooD",
+            "email": "3412157384@qq.com"
+        }
+    ]
+}
