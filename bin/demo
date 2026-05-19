@@ -1,0 +1,310 @@
+#!/usr/bin/env php
+<?php
+
+require_once __DIR__ . '/../vendor/autoload.php';
+
+use Wood\RedisQueue\Manager;
+use Wood\RedisQueue\Message;
+
+// ─── 终端颜色 ──────────────────────────────────────────────
+const CLR_RESET  = "\033[0m";
+const CLR_GREEN  = "\033[32m";
+const CLR_YELLOW = "\033[33m";
+const CLR_CYAN   = "\033[36m";
+const CLR_RED    = "\033[31m";
+const CLR_WHITE  = "\033[37m";
+const CLR_BOLD   = "\033[1m";
+
+function green(string $s): string  { return CLR_GREEN . $s . CLR_RESET; }
+function yellow(string $s): string { return CLR_YELLOW . $s . CLR_RESET; }
+function cyan(string $s): string   { return CLR_CYAN . $s . CLR_RESET; }
+function red(string $s): string    { return CLR_RED . $s . CLR_RESET; }
+function bold(string $s): string   { return CLR_BOLD . $s . CLR_RESET; }
+
+function log_info(string $msg): void  { echo '[' . date('H:i:s') . '] ' . green('INFO')  . "  $msg\n"; }
+function log_send(string $msg): void  { echo '[' . date('H:i:s') . '] ' . cyan('SEND')  . "  $msg\n"; }
+function log_recv(string $msg): void  { echo '[' . date('H:i:s') . '] ' . yellow('RECV') . "  $msg\n"; }
+function log_warn(string $msg): void  { echo '[' . date('H:i:s') . '] ' . red('WARN')   . "  $msg\n"; }
+
+// ─── Banner ────────────────────────────────────────────────
+function banner(): void
+{
+    echo bold(green(
+        "\n" .
+        "╔══════════════════════════════════════════╗\n" .
+        "║       Redis Queue CLI Demo Tool         ║\n" .
+        "╚══════════════════════════════════════════╝\n"
+    ));
+}
+
+// ─── Help ──────────────────────────────────────────────────
+function showHelp(): void
+{
+    banner();
+    echo bold("USAGE:\n");
+    echo "  php bin/demo <command> [options]\n\n";
+
+    echo bold("COMMANDS:\n");
+    echo '  ' . green('bootstrap') . "  启动消费服务（自动扫描 Consumer 目录）\n";
+    echo '  ' . green('send')     . "      发送一条消息到指定队列\n";
+    echo '  ' . green('demo')     . "      运行完整演示（定时发送 + bootstrap 消费）\n";
+    echo '  ' . green('help')     . "      显示此帮助信息\n\n";
+
+    echo bold("OPTIONS:\n");
+    echo "  --host=HOST             Redis 地址        " . gray('[默认: 127.0.0.1]') . "\n";
+    echo "  --port=PORT             Redis 端口        " . gray('[默认: 6379]') . "\n";
+    echo "  --password=PASSWORD     Redis 密码\n";
+    echo "  --queue=NAME            队列名称          " . gray('[默认: test]') . "\n";
+    echo "  --data=JSON             消息数据(JSON)    " . gray('[默认: {"msg":"hello"}]') . "\n";
+    echo "  --delay=SECONDS         延迟秒数          " . gray('[默认: 0]') . "\n";
+    echo "  --consumer-dir=DIR      Consumer 目录     " . gray('[默认: ./test/Consumer/]') . "\n";
+    echo "  --max-attempts=N        最大重试次数      " . gray('[默认: 3]') . "\n";
+    echo "  --retry-seconds=N       重试间隔基数      " . gray('[默认: 5]') . "\n\n";
+
+    echo bold("EXAMPLES:\n");
+    echo '  ' . yellow('# 启动消费服务（bootstrap 模式）') . "\n";
+    echo "  php bin/demo bootstrap --host=127.0.0.1 --consumer-dir=./test/Consumer/\n\n";
+
+    echo '  ' . yellow('# 发送一条消息') . "\n";
+    echo "  php bin/demo send --queue=test --data='{\"uid\":12345}'\n\n";
+
+    echo '  ' . yellow('# 发送一条延迟 10 秒的消息') . "\n";
+    echo "  php bin/demo send --queue=test --delay=10\n\n";
+
+    echo '  ' . yellow('# 运行完整演示') . "\n";
+    echo "  php bin/demo demo --host=127.0.0.1 --consumer-dir=./test/Consumer/\n\n";
+
+    echo '  ' . yellow('# 手动订阅模式演示') . "\n";
+    echo "  php bin/demo demo --host=127.0.0.1 --mode=subscribe\n\n";
+
+    echo bold("NOTES:\n");
+    echo "  - 需要本地 Redis 服务正在运行\n";
+    echo "  - 运行 demo/bootstrap 前建议先清理旧数据：redis-cli FLUSHDB\n\n";
+}
+
+function gray(string $s): string { return "\033[90m" . $s . CLR_RESET; }
+
+// ─── 参数解析 ──────────────────────────────────────────────
+function parseArgs(array $argv): array
+{
+    $args = [
+        'host'         => '127.0.0.1',
+        'port'         => 6379,
+        'password'     => null,
+        'queue'        => 'test',
+        'data'         => '{"msg":"hello"}',
+        'delay'        => 0,
+        'consumer_dir' => __DIR__ . '/../test/Consumer/',
+        'max_attempts'  => 3,
+        'retry_seconds' => 5,
+        'mode'          => 'bootstrap',
+    ];
+
+    foreach ($argv as $arg) {
+        if (str_starts_with($arg, '--host=')) {
+            $args['host'] = substr($arg, 7);
+        } elseif (str_starts_with($arg, '--port=')) {
+            $args['port'] = (int) substr($arg, 7);
+        } elseif (str_starts_with($arg, '--password=')) {
+            $args['password'] = substr($arg, 11);
+        } elseif (str_starts_with($arg, '--queue=')) {
+            $args['queue'] = substr($arg, 8);
+        } elseif (str_starts_with($arg, '--data=')) {
+            $args['data'] = substr($arg, 7);
+        } elseif (str_starts_with($arg, '--delay=')) {
+            $args['delay'] = (int) substr($arg, 8);
+        } elseif (str_starts_with($arg, '--consumer-dir=')) {
+            $args['consumer_dir'] = substr($arg, 15);
+        } elseif (str_starts_with($arg, '--max-attempts=')) {
+            $args['max_attempts'] = (int) substr($arg, 15);
+        } elseif (str_starts_with($arg, '--retry-seconds=')) {
+            $args['retry_seconds'] = (int) substr($arg, 16);
+        } elseif (str_starts_with($arg, '--mode=')) {
+            $args['mode'] = substr($arg, 7);
+        }
+    }
+
+    return $args;
+}
+
+function buildConfig(array $args): array
+{
+    $config = [
+        'host'          => $args['host'],
+        'port'          => $args['port'],
+        'max_attempts'  => $args['max_attempts'],
+        'retry_seconds' => $args['retry_seconds'],
+    ];
+    if ($args['password']) {
+        $config['password'] = $args['password'];
+    }
+    return $config;
+}
+
+// ─── 命令处理 ──────────────────────────────────────────────
+
+function cmdBootstrap(array $args): void
+{
+    banner();
+    $config = buildConfig($args);
+
+    log_info("Redis:  {$args['host']}:{$args['port']}");
+    log_info("Consumer 目录: {$args['consumer_dir']}");
+    log_info("最大重试: {$args['max_attempts']}  重试间隔: {$args['retry_seconds']}s");
+
+    $manager = new Manager($config, $args['consumer_dir']);
+    log_info('启动 bootstrap，等待消息...');
+    echo str_repeat('-', 52) . "\n";
+    $manager->bootstrap();
+}
+
+function cmdSend(array $args): void
+{
+    banner();
+    $config = buildConfig($args);
+    $manager = new Manager($config, '');
+
+    $data = json_decode($args['data'], true);
+    if (json_last_error() !== JSON_ERROR_NONE) {
+        log_warn("JSON 数据格式错误: {$args['data']}");
+        exit(1);
+    }
+
+    log_info("Redis:  {$args['host']}:{$args['port']}");
+    log_info("队列:   {$args['queue']}");
+    log_info("延迟:   {$args['delay']}s");
+    log_info("数据:   {$args['data']}");
+
+    $manager->send($args['queue'], $data, $args['delay']);
+
+    if ($args['delay'] > 0) {
+        log_send("延迟消息已发送 -> {$args['queue']} (将在 {$args['delay']} 秒后投递)");
+    } else {
+        log_send("消息已发送 -> {$args['queue']}");
+    }
+}
+
+function cmdDemo(array $args): void
+{
+    banner();
+
+    $config = buildConfig($args);
+
+    log_info('══════════ Redis Queue 完整演示 ══════════');
+    log_info("Redis:  {$args['host']}:{$args['port']}");
+    log_info("模式:   {$args['mode']}");
+    echo str_repeat('-', 52) . "\n";
+
+    if ($args['mode'] === 'subscribe') {
+        demoManualSubscribe($config, $args);
+    } else {
+        demoBootstrap($config, $args);
+    }
+}
+
+function demoBootstrap(array $config, array $args): void
+{
+    $manager = new Manager($config, $args['consumer_dir']);
+    $queueName = $args['queue'];
+
+    log_info('Consumer 目录: ' . $args['consumer_dir']);
+
+    // 定时发送消息（模拟生产者）
+    $counter = 0;
+    $messageCount = 5;
+    $timerId = null;
+
+    $sendCallback = function () use ($manager, $queueName, &$counter, $messageCount, &$timerId) {
+        $counter++;
+        $data = ['id' => $counter, 'time' => date('Y-m-d H:i:s'), 'value' => rand(1, 100)];
+        $manager->send($queueName, $data);
+        log_send("#{$counter} -> {$queueName} | data: " . json_encode($data, JSON_UNESCAPED_UNICODE));
+
+        if ($counter >= $messageCount) {
+            if ($timerId) {
+                \Swoole\Timer::clear($timerId);
+            }
+            log_info("发送完毕，共 {$messageCount} 条消息");
+        }
+    };
+
+    log_info("将每隔 2 秒发送 1 条消息，共 {$messageCount} 条");
+    log_info('启动 bootstrap...');
+    echo str_repeat('-', 52) . "\n";
+
+    // 第一次立即发送
+    $sendCallback();
+
+    // 后续定时发送
+    $timerId = \Swoole\Timer::tick(2000, $sendCallback);
+
+    $manager->bootstrap();
+}
+
+function demoManualSubscribe(array $config, array $args): void
+{
+    $manager = new Manager($config, '');
+    $queueName = $args['queue'];
+
+    log_info("手动订阅队列: {$queueName}");
+
+    // 注册消费者
+    $manager->subscribe($queueName, function (Message $message) {
+        $payload = $message->getPayload();
+        log_recv("消费成功 | " . json_encode($payload, JSON_UNESCAPED_UNICODE));
+    });
+
+    // 注册失败处理器
+    $manager->setFailedQueue($queueName, function (Message $message) {
+        log_warn("消费失败 | {$message->getErrorMsg()}");
+    });
+
+    log_info('消费者已注册');
+
+    // 定时发送
+    $counter = 0;
+    $messageCount = 5;
+    $sendCallback = function () use ($manager, $queueName, &$counter, $messageCount, &$timerId) {
+        $counter++;
+        $data = ['id' => $counter, 'time' => date('Y-m-d H:i:s')];
+        $manager->send($queueName, $data);
+        log_send("#{$counter} -> {$queueName} | " . json_encode($data, JSON_UNESCAPED_UNICODE));
+
+        if ($counter >= $messageCount && isset($timerId)) {
+            \Swoole\Timer::clear($timerId);
+            log_info("发送完毕，共 {$messageCount} 条消息");
+        }
+    };
+
+    log_info("将每隔 2 秒发送 1 条消息，共 {$messageCount} 条");
+    echo str_repeat('-', 52) . "\n";
+
+    // 第一次立即发送
+    $sendCallback();
+
+    // 后续定时发送
+    $timerId = \Swoole\Timer::tick(2000, $sendCallback);
+}
+
+// ─── 入口 ──────────────────────────────────────────────────
+date_default_timezone_set('Asia/Shanghai');
+
+$command = $argv[1] ?? 'help';
+
+switch ($command) {
+    case 'bootstrap':
+        cmdBootstrap(parseArgs($argv));
+        break;
+    case 'send':
+        cmdSend(parseArgs($argv));
+        break;
+    case 'demo':
+        cmdDemo(parseArgs($argv));
+        break;
+    case 'help':
+    case '-h':
+    case '--help':
+    default:
+        showHelp();
+        break;
+}

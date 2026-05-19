@@ -36,6 +36,32 @@ send() ──delay>0──> queue-delayed ──(到期)── 重试/失败处�
                                     queue-delayed    queue-failed
 ```
 
+## CLI 演示工具
+
+项目内置了一个终端演示脚本，方便快速测试和体验：
+
+```bash
+# 查看帮助
+php bin/demo help
+
+# 启动消费服务（bootstrap 模式）
+php bin/demo bootstrap --host=127.0.0.1 --consumer-dir=./test/Consumer/
+
+# 发送一条消息
+php bin/demo send --queue=test --data='{"uid":12345}'
+
+# 发送一条延迟 10 秒的消息
+php bin/demo send --queue=test --delay=10
+
+# 运行完整演示（每 2 秒自动发一条消息 + bootstrap 消费）
+php bin/demo demo --host=127.0.0.1 --consumer-dir=./test/Consumer/
+
+# 手动订阅模式演示（不使用 bootstrap，手动 subscribe）
+php bin/demo demo --host=127.0.0.1 --mode=subscribe
+```
+
+> 运行前请确保本地 Redis 服务已启动。
+
 ## 使用方式
 
 ### 方式一：手动订阅

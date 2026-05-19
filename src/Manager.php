@@ -62,7 +62,7 @@ class Manager
         // 注册订阅队列
         $key = self::QUEUE_WAITING . ':' . $queue_name;
         $this->_subscribeQueues[$key] = $callback;
-        dump($this->_subscribeQueues);
+//        dump($this->_subscribeQueues);
 
 
         // 如果还没启动拉取引擎，则被动唤醒它

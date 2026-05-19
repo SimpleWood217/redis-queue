@@ -13,7 +13,9 @@ class TestConsumer implements ConsumerInterface
     {
         static $count = 0;
         $count++;
-        echo '[' . date('Y-m-d H:i:s') . "] Consume successfully, count: " . $count . PHP_EOL;
+//        echo '[' . date('Y-m-d H:i:s') . "] Consume successfully, count: " . $count . PHP_EOL;
+//        dump($message->getPayload());
+        echo '成功消费消息：' . $message->getId() . PHP_EOL;
     }
 
     public function onConsumptionFailure(Message $message): void
