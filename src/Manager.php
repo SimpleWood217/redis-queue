@@ -22,7 +22,7 @@ class Manager
     protected array       $_subscribeQueues = [];
     protected array       $_failedQueues    = [];
     protected bool        $_isPulling       = false;
-    public bool           $_isRunning       = false;
+    public static bool    $_isRunning       = false;
     protected array       $_config          = [
         'max_attempts'  => 3,
         'retry_seconds' => 5,
@@ -126,17 +126,16 @@ class Manager
     private function pull(): void
     {
         $this->_isPulling = true;
-        $this->_isRunning = true;
+        self::$_isRunning = true;
 
-
-        run(function () {
+        $execute = function () {
             $this->tryToPullDelayedQueue();
             if (empty($this->_subscribeQueues)) {
                 return;
             }
             $redis = new RedisClient($this->_config);
 
-            while ($this->_isRunning) {
+            while (self::$_isRunning) {
                 $result = $redis->brpop(array_keys($this->_subscribeQueues), 5);
                 if (empty($result)) {
                     continue;
@@ -157,30 +156,34 @@ class Manager
                     $callback = $this->_subscribeQueues[$key];
                     go(function () use ($callback, $message) {
                         try {
+                            $message->setStartMicrotime(microtime(true));
                             call_user_func($callback, $message);
                         } catch (Throwable $e) {
                             $message->incrementAttempts();
                             $message->setErrorMsg($e->getMessage());
 
+                            $key = self::QUEUE_WAITING . ':' . $message->getQueueName();
                             if (isset($this->_failedQueues[$key])) {
                                 try {
                                     call_user_func($this->_failedQueues[$key], $message);
                                 } catch (Throwable $e) {
                                     $message->setFallbackErrorMsg($e->getMessage());
                                 }
+                            }
 
-                                if ($message->getAttempts() > $this->_config['max_attempts']) {
-                                    $this->fail($message);
-                                } else {
-                                    $this->retry($message);
-                                }
+                            if ($message->getAttempts() > $this->_config['max_attempts']) {
+                                $this->fail($message);
+                            } else {
+                                $this->retry($message);
                             }
                         }
                     });
                 }
             }
             $this->_isPulling = false;
-        });
+        };
+
+        go($execute);
     }
 
     private function tryToPullDelayedQueue(): void
@@ -188,7 +191,7 @@ class Manager
         go(function () {
             $redis = new RedisClient($this->_config);
             $options = ['LIMIT' => [0, 128]];
-            while ($this->_isRunning) {
+            while (self::$_isRunning) {
                 $now = time();
                 $result = $redis->zrangebyscore(self::QUEUE_DELAYED, '-inf', $now, $options);
                 if ($result) {
@@ -240,46 +243,60 @@ class Manager
      */
     public function bootstrap(): void
     {
-        $result = [];
+        $initializer = function () {
+            $result = [];
 
-        $iterator = new RecursiveIteratorIterator(
-            new RecursiveDirectoryIterator($this->consumer_dir, FilesystemIterator::SKIP_DOTS)
-        );
+            $iterator = new RecursiveIteratorIterator(
+                new RecursiveDirectoryIterator($this->consumer_dir, FilesystemIterator::SKIP_DOTS)
+            );
 
-        foreach ($iterator as $file) {
-            if ($file->getExtension() !== 'php') {
-                continue;
-            }
-            $filePath = $file->getRealPath();
-            $content = file_get_contents($filePath);
-
-            // 匹配 namespace
-            if (preg_match('/namespace\s+([^;]+);/', $content, $nsMatch)) {
-                $namespace = $nsMatch[1];
-            } else {
-                $namespace = '';
-            }
-
-            // 匹配 class 名称
-            if (preg_match('/class\s+([^\s{]+)/', $content, $classMatch)) {
-                $className = $classMatch[1];
-                $fullClass = $namespace ? $namespace . '\\' . $className : $className;
-                // 尝试加载类（确保已 autoload）
-                if (!class_exists($fullClass)) {
+            foreach ($iterator as $file) {
+                if ($file->getExtension() !== 'php') {
                     continue;
                 }
-                // 判断是否实现接口
-                if (in_array(ConsumerInterface::class, class_implements($fullClass), true)) {
-                    $result[] = $fullClass;
+                $filePath = $file->getRealPath();
+                $content = file_get_contents($filePath);
+
+                // 匹配 namespace
+                if (preg_match('/namespace\s+([^;]+);/', $content, $nsMatch)) {
+                    $namespace = $nsMatch[1];
+                } else {
+                    $namespace = '';
+                }
+
+                // 匹配 class 名称
+                if (preg_match('/class\s+([^\s{]+)/', $content, $classMatch)) {
+                    $className = $classMatch[1];
+                    $fullClass = $namespace ? $namespace . '\\' . $className : $className;
+                    // 尝试加载类（确保已 autoload）
+                    if (!class_exists($fullClass)) {
+                        continue;
+                    }
+                    // 判断是否实现接口
+                    if (in_array(ConsumerInterface::class, class_implements($fullClass), true)) {
+                        $result[] = $fullClass;
+                    }
                 }
             }
-        }
-        foreach ($result as $class) {
-            $consumer = Container::get($class);
-            $consumer_name = $consumer->name ?? 'default';
+            foreach ($result as $class) {
+                $consumer = Container::get($class);
+                $consumer_name = $consumer->name ?? 'default';
 
-            $this->subscribe($consumer_name, [$consumer, 'consume']);
-            $this->setFailedQueue($consumer_name, [$consumer, 'onConsumptionFailure']);
+                $this->subscribe($consumer_name, [$consumer, 'consume']);
+                $this->setFailedQueue($consumer_name, [$consumer, 'onConsumptionFailure']);
+            }
+        };
+
+
+        if (Co::getCid() === -1) {
+            run($initializer);
+        } else {
+            $initializer();
         }
+    }
+
+    public static function shutdown(): void
+    {
+        self::$_isRunning = false;
     }
 }

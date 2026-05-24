@@ -23,6 +23,7 @@ class Message implements MessageInterface
         private ?int            $timestamp = null,
         private ?string         $error_msg = null,
         private ?string         $fallback_error_msg = null,
+        private ?float          $start_microtime = null
     ) {
         $this->timestamp = $this->timestamp ?? time();
         $this->date = $this->date ?? date('Y-m-d H:i:s', $this->timestamp);
@@ -94,6 +95,22 @@ class Message implements MessageInterface
     public function setErrorMsg(?string $error_msg): void
     {
         $this->error_msg = $error_msg;
+    }
+
+    /**
+     * @param float|null $start_microtime
+     */
+    public function setStartMicrotime(?float $start_microtime): void
+    {
+        $this->start_microtime = $start_microtime;
+    }
+
+    /**
+     * @return float|null
+     */
+    public function getStartMicrotime(): ?float
+    {
+        return $this->start_microtime;
     }
 
     /**

@@ -11,7 +11,7 @@ $c = new Manager(
     [
         'host' => '127.0.0.1',
     ],
-    root_path() . "test/Consumer/"
+    \Wood\RedisQueue\PathHelper::getHostRoot() . "test/Consumer/"
 );
 $cb = function () use ($c) {
     $c->send('test', ['123' => '456'], 15);
@@ -19,7 +19,8 @@ $cb = function () use ($c) {
 };
 $id = Timer::tick(2000, $cb);
 $cb();
-Timer::after(10000, function () use ($id) {
+Timer::after(4000, function () use ($id) {
+//    Manager::shutdown();
     Timer::clear($id);
     echo '[' . date('Y-m-d H:i:s') . "] clear timer" . PHP_EOL;
 });
